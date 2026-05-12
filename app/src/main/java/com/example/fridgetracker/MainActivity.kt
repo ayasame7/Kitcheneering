@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.sp
 import com.google.firebase.FirebaseApp
 import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
+import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.*
 import kotlinx.coroutines.delay
@@ -640,10 +641,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         
         FirebaseApp.initializeApp(this)
-        // App Check disabled for development - causing invalid token errors
-        // Re-enable in production with proper configuration:
-        // val firebaseAppCheck = FirebaseAppCheck.getInstance()
-        // firebaseAppCheck.installAppCheckProviderFactory(DebugAppCheckProviderFactory.getInstance())
+        
+        // App Check Configuration
+        val firebaseAppCheck = FirebaseAppCheck.getInstance()
+        if (BuildConfig.DEBUG) {
+            firebaseAppCheck.installAppCheckProviderFactory(DebugAppCheckProviderFactory.getInstance())
+            Log.d("AppCheck", "DebugAppCheckProviderFactory installed")
+        } else {
+            firebaseAppCheck.installAppCheckProviderFactory(PlayIntegrityAppCheckProviderFactory.getInstance())
+            Log.d("AppCheck", "PlayIntegrityAppCheckProviderFactory installed")
+        }
 
         // Enable Firebase Database persistence
         try {
