@@ -12,8 +12,8 @@ android {
         applicationId = "com.sameh.kitchentracker"
         minSdk = 23
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.0.5"
+        versionCode = 26
+        versionName = "2.0.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
