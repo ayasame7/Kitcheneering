@@ -238,6 +238,8 @@ val commonKitchenItems = listOf(
     PredefinedItem("chicken_panee", "kg", "chicken", R.string.item_chicken_panee)
 )
 
+val baseCategories = listOf("fruits", "vegetables", "dairy", "meat", "chicken", "bakery", "frozen", "pantry", "cleaners", "spices")
+
 fun getEnglishItemName(key: String): String {
     return key.replace("_", " ").replaceFirstChar { it.uppercase() }
 }
@@ -322,7 +324,7 @@ fun SplashScreen(onTimeout: () -> Unit) {
     )
 
     LaunchedEffect(Unit) {
-        delay(3000)
+        delay(2000)
         onTimeout()
     }
 
@@ -1022,7 +1024,11 @@ fun InventoryScreen(
     }
     val database = remember(userId) { FirebaseDatabase.getInstance().reference.child("users").child(userId).child("inventory") }
 
-    val categories = listOf("All", "fruits", "vegetables", "dairy", "meat", "chicken", "bakery", "frozen", "pantry", "cleaners", "spices")
+    val categories = remember(items) {
+        val currentCategories = items.values.map { it.category }.filter { it.isNotBlank() }.distinct()
+        val custom = currentCategories.filter { it.lowercase() !in baseCategories }
+        listOf("All") + baseCategories + custom
+    }
 
     val filteredItems = remember(items, searchQuery, selectedCategory, arabicContext) {
         items.filter { (key, item) ->
@@ -1148,26 +1154,36 @@ fun InventoryScreen(
     }
 
     if (showAddDialog) {
-        AddItemDialog(onDismiss = { showAddDialog = false }, onItemAdded = { key, item ->
-            Log.d("Firebase", "Adding item: $key to database")
-            database.child(key).setValue(item)
-                .addOnSuccessListener { 
-                    Log.d("Firebase", "Successfully added $key")
-                    android.widget.Toast.makeText(context, "Added $key", android.widget.Toast.LENGTH_SHORT).show()
-                }
-                .addOnFailureListener { e -> 
-                    Log.e("Firebase", "Failed to add $key", e)
-                    android.widget.Toast.makeText(context, "Error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
-                }
-            showAddDialog = false
-        })
+        AddItemDialog(
+            onDismiss = { showAddDialog = false }, 
+            onItemAdded = { key, item ->
+                Log.d("Firebase", "Adding item: $key to database")
+                database.child(key).setValue(item)
+                    .addOnSuccessListener { 
+                        Log.d("Firebase", "Successfully added $key")
+                        android.widget.Toast.makeText(context, "Added $key", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    .addOnFailureListener { e -> 
+                        Log.e("Firebase", "Failed to add $key", e)
+                        android.widget.Toast.makeText(context, "Error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                showAddDialog = false
+            },
+            existingCategories = categories.filter { it != "All" }
+        )
     }
 
     editingItem?.let { (key, item) ->
-        EditItemDialog(itemKey = key, item = item, onDismiss = { editingItem = null }, onItemUpdated = { updatedItem ->
-            if (updatedItem != null) database.child(key).setValue(updatedItem)
-            editingItem = null
-        })
+        EditItemDialog(
+            itemKey = key, 
+            item = item, 
+            onDismiss = { editingItem = null }, 
+            onItemUpdated = { updatedItem ->
+                if (updatedItem != null) database.child(key).setValue(updatedItem)
+                editingItem = null
+            },
+            existingCategories = categories.filter { it != "All" }
+        )
     }
 }
 
@@ -1175,7 +1191,7 @@ fun InventoryScreen(
 fun KitchenItemCard(key: String, item: KitchenItem, arabicContext: Context? = null, onEdit: () -> Unit, onDelete: () -> Unit) {
     val context = LocalContext.current
     val isExpired = item.expiryDate?.let { it < System.currentTimeMillis() } ?: false
-    val isLowStock = isLowStock(item)
+    val isLowStock = isLowStock(key, item)
 
     Card(
         modifier = Modifier.fillMaxWidth().clickable { onEdit() },
@@ -1214,6 +1230,7 @@ fun KitchenItemCard(key: String, item: KitchenItem, arabicContext: Context? = nu
 fun KitchenNotesScreen(userId: String) {
     var notes by remember { mutableStateOf<List<KitchenNote>>(emptyList()) }
     var showAddNoteDialog by remember { mutableStateOf(false) }
+    var editingNote by remember { mutableStateOf<KitchenNote?>(null) }
     var noteText by remember { mutableStateOf("") }
     var isSavingNote by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -1252,7 +1269,13 @@ fun KitchenNotesScreen(userId: String) {
                 }
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(notes) { note -> NoteCard(note, onDelete = { database.child(note.id).removeValue() }) }
+                    items(notes) { note -> 
+                        NoteCard(
+                            note = note, 
+                            onEdit = { editingNote = note },
+                            onDelete = { database.child(note.id).removeValue() }
+                        ) 
+                    }
                 }
             }
         }
@@ -1356,18 +1379,70 @@ fun KitchenNotesScreen(userId: String) {
             dismissButton = { TextButton(onClick = { showAddNoteDialog = false; noteText = "" }) { Text("Cancel", color = Color.Gray) } }
         )
     }
+
+    editingNote?.let { note ->
+        var editText by remember { mutableStateOf(note.text) }
+        var isUpdatingNote by remember { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = { editingNote = null },
+            title = { Text("Edit Note", fontWeight = FontWeight.Bold, color = Color(0xFF1B5E20)) },
+            text = { 
+                OutlinedTextField(
+                    value = editText, 
+                    onValueChange = { editText = it }, 
+                    modifier = Modifier.fillMaxWidth(), 
+                    shape = RoundedCornerShape(12.dp)
+                ) 
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (editText.isNotBlank() && !isUpdatingNote) {
+                            isUpdatingNote = true
+                            database.child(note.id).child("text").setValue(editText)
+                                .addOnSuccessListener {
+                                    editingNote = null
+                                    isUpdatingNote = false
+                                    android.widget.Toast.makeText(context, "✅ Note updated", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                                .addOnFailureListener {
+                                    isUpdatingNote = false
+                                    android.widget.Toast.makeText(context, "❌ Update failed", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                        }
+                    },
+                    enabled = !isUpdatingNote && editText.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                ) {
+                    if (isUpdatingNote) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text("Update")
+                    }
+                }
+            },
+            dismissButton = { TextButton(onClick = { editingNote = null }) { Text("Cancel", color = Color.Gray) } }
+        )
+    }
 }
 
 @Composable
-fun NoteCard(note: KitchenNote, onDelete: () -> Unit) {
+fun NoteCard(note: KitchenNote, onEdit: () -> Unit, onDelete: () -> Unit) {
     val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.9f)), elevation = CardDefaults.cardElevation(2.dp)) {
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable { onEdit() }, 
+        shape = RoundedCornerShape(12.dp), 
+        colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.9f)), 
+        elevation = CardDefaults.cardElevation(2.dp)
+    ) {
         Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(text = note.text, fontSize = 14.sp, color = Color.Black)
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(text = sdf.format(Date(note.timestamp)), fontSize = 10.sp, color = Color.Gray)
             }
+            IconButton(onClick = onEdit) { Icon(Icons.Default.Edit, "Edit Note", tint = Color(0xFF2E7D32).copy(alpha = 0.7f)) }
             IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Delete Note", tint = Color.Red.copy(alpha = 0.7f)) }
         }
     }
@@ -1375,7 +1450,7 @@ fun NoteCard(note: KitchenNote, onDelete: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AddItemDialog(onDismiss: () -> Unit, onItemAdded: (String, KitchenItem) -> Unit) {
+fun AddItemDialog(onDismiss: () -> Unit, onItemAdded: (String, KitchenItem) -> Unit, existingCategories: List<String>) {
     val context = LocalContext.current
     val arabicContext = remember(context) {
         val configuration = Configuration(context.resources.configuration)
@@ -1406,12 +1481,35 @@ fun AddItemDialog(onDismiss: () -> Unit, onItemAdded: (String, KitchenItem) -> U
             text = {
                 Column {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(value = quantityStr, onValueChange = { quantityStr = it }, label = { Text("Qty") }, modifier = Modifier.weight(1f), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), shape = RoundedCornerShape(12.dp))
-                        Row(modifier = Modifier.width(IntrinsicSize.Min)) {
-                            IconButton(onClick = { val current = quantityStr.toDoubleOrNull() ?: 0.0; quantityStr = (current - 1.0).coerceAtLeast(0.0).toString() }, modifier = Modifier.size(36.dp).background(Color(0xFFB71C1C), RoundedCornerShape(8.dp))) { Icon(Icons.Default.Remove, null, tint = Color.White, modifier = Modifier.size(18.dp)) }
-                            IconButton(onClick = { val current = quantityStr.toDoubleOrNull() ?: 0.0; quantityStr = (current + 1.0).toString() }, modifier = Modifier.size(36.dp).background(Color(0xFF003300), RoundedCornerShape(8.dp))) { Icon(Icons.Default.Add, null, tint = Color.White, modifier = Modifier.size(18.dp)) }
+                        OutlinedTextField(
+                            value = quantityStr,
+                            onValueChange = { quantityStr = it },
+                            label = { Text("Qty") },
+                            modifier = Modifier.weight(1f),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = {
+                                    val current = quantityStr.replace(',', '.').toDoubleOrNull() ?: 0.0
+                                    val newVal = (current - 1.0).coerceAtLeast(0.0)
+                                    quantityStr = if (newVal == newVal.toLong().toDouble()) newVal.toLong().toString() else newVal.toString()
+                                },
+                                modifier = Modifier.size(40.dp).background(Color(0xFFB71C1C), RoundedCornerShape(8.dp))
+                            ) { Icon(Icons.Default.Remove, null, tint = Color.White) }
+                            
+                            Spacer(modifier = Modifier.width(4.dp))
+                            
+                            IconButton(
+                                onClick = {
+                                    val current = quantityStr.replace(',', '.').toDoubleOrNull() ?: 0.0
+                                    val newVal = current + 1.0
+                                    quantityStr = if (newVal == newVal.toLong().toDouble()) newVal.toLong().toString() else newVal.toString()
+                                },
+                                modifier = Modifier.size(40.dp).background(Color(0xFF003300), RoundedCornerShape(8.dp))
+                            ) { Icon(Icons.Default.Add, null, tint = Color.White) }
                         }
-                        // Removed 'Min' field
                     }
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -1427,13 +1525,36 @@ fun AddItemDialog(onDismiss: () -> Unit, onItemAdded: (String, KitchenItem) -> U
                     Spacer(modifier = Modifier.height(12.dp))
 
                     var catExpanded by remember { mutableStateOf(false) }
-                    ExposedDropdownMenuBox(expanded = catExpanded, onExpandedChange = { catExpanded = it }) {
-                        OutlinedTextField(value = getLocalizedCategory(context, category), onValueChange = {}, readOnly = true, label = { Text("Category") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(catExpanded) }, modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth(), shape = RoundedCornerShape(12.dp))
-                        ExposedDropdownMenu(expanded = catExpanded, onDismissRequest = { catExpanded = false }) {
-                            listOf("fruits", "vegetables", "dairy", "meat", "chicken", "bakery", "frozen", "pantry", "cleaners", "spices").forEach { cat ->
-                                DropdownMenuItem(text = { Text(getLocalizedCategory(context, cat)) }, onClick = { category = cat; catExpanded = false })
+                    var isCustomCategory by remember { mutableStateOf(false) }
+                    
+                    if (!isCustomCategory) {
+                        ExposedDropdownMenuBox(expanded = catExpanded, onExpandedChange = { catExpanded = it }) {
+                            OutlinedTextField(value = getLocalizedCategory(context, category), onValueChange = {}, readOnly = true, label = { Text("Category") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(catExpanded) }, modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth(), shape = RoundedCornerShape(12.dp))
+                            ExposedDropdownMenu(expanded = catExpanded, onDismissRequest = { catExpanded = false }) {
+                                existingCategories.forEach { cat ->
+                                    DropdownMenuItem(text = { Text(getLocalizedCategory(context, cat)) }, onClick = { category = cat; catExpanded = false })
+                                }
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("➕ Add New Custom Category...", color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold) },
+                                    onClick = { isCustomCategory = true; category = ""; catExpanded = false }
+                                )
                             }
                         }
+                    } else {
+                        OutlinedTextField(
+                            value = category,
+                            onValueChange = { category = it },
+                            label = { Text("Custom Category Name") },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            trailingIcon = {
+                                IconButton(onClick = { isCustomCategory = false; category = "pantry" }) {
+                                    Icon(Icons.Default.Close, "Cancel")
+                                }
+                            },
+                            singleLine = true
+                        )
                     }
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -1455,7 +1576,7 @@ fun AddItemDialog(onDismiss: () -> Unit, onItemAdded: (String, KitchenItem) -> U
             confirmButton = {
                 Button(onClick = {
                     val key = if (isCustomItemMode) customItemName.lowercase().replace(" ", "_") else selectedPredefined!!.key
-                    onItemAdded(key, KitchenItem(quantityStr.toDoubleOrNull() ?: 1.0, 1.0, unit, category, expiryDate)) // Always use 1.0 as minQuantity
+                    onItemAdded(key, KitchenItem(quantityStr.replace(',', '.').toDoubleOrNull() ?: 1.0, 1.0, unit, category, expiryDate)) // Always use 1.0 as minQuantity
                     isCustomItemMode = false; selectedPredefined = null
                 }) { Text("Add") }
             },
@@ -1502,14 +1623,17 @@ fun AddItemDialog(onDismiss: () -> Unit, onItemAdded: (String, KitchenItem) -> U
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun EditItemDialog(itemKey: String, item: KitchenItem, onDismiss: () -> Unit, onItemUpdated: (KitchenItem?) -> Unit) {
+fun EditItemDialog(itemKey: String, item: KitchenItem, onDismiss: () -> Unit, onItemUpdated: (KitchenItem?) -> Unit, existingCategories: List<String>) {
     val context = LocalContext.current
     val arabicContext = remember(context) {
         val configuration = Configuration(context.resources.configuration)
         configuration.setLocale(Locale.forLanguageTag("ar"))
         context.createConfigurationContext(configuration)
     }
-    var quantityStr by remember { mutableStateOf(item.quantity.toString()) }
+    var quantityStr by remember { 
+        val q = item.quantity
+        mutableStateOf(if (q == q.toLong().toDouble()) q.toLong().toString() else q.toString())
+    }
     var unit by remember { mutableStateOf(item.unit) }
     var category by remember { mutableStateOf(item.category) }
     var expiryDate by remember { mutableStateOf(item.expiryDate) }
@@ -1517,23 +1641,42 @@ fun EditItemDialog(itemKey: String, item: KitchenItem, onDismiss: () -> Unit, on
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Edit ${getLocalizedItemNameWithArabic(context, itemKey, arabicContext)}", fontSize = 15.sp, modifier = Modifier.weight(1f))
-                IconButton(onClick = { val current = quantityStr.toDoubleOrNull() ?: 0.0; quantityStr = (current - 1.0).coerceAtLeast(0.0).toString() }, modifier = Modifier.size(32.dp).background(Color(0xFFB71C1C), RoundedCornerShape(8.dp))) { Icon(Icons.Default.Remove, null, tint = Color.White, modifier = Modifier.size(18.dp)) }
-                Spacer(modifier = Modifier.width(8.dp))
-                IconButton(onClick = { val current = quantityStr.toDoubleOrNull() ?: 0.0; quantityStr = (current + 1.0).toString() }, modifier = Modifier.size(32.dp).background(Color(0xFF003300), RoundedCornerShape(8.dp))) { Icon(Icons.Default.Add, null, tint = Color.White, modifier = Modifier.size(18.dp)) }
-            }
+            Text("Edit ${getLocalizedItemNameWithArabic(context, itemKey, arabicContext)}", fontSize = 16.sp, fontWeight = FontWeight.Bold)
         },
         text = {
             Column {
-                OutlinedTextField(
-                    value = quantityStr,
-                    onValueChange = { quantityStr = it },
-                    label = { Text("Quantity") },
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    shape = RoundedCornerShape(12.dp)
-                )
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = quantityStr,
+                        onValueChange = { quantityStr = it },
+                        label = { Text("Quantity") },
+                        modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = {
+                                val current = quantityStr.replace(',', '.').toDoubleOrNull() ?: 0.0
+                                val newVal = (current - 1.0).coerceAtLeast(0.0)
+                                quantityStr = if (newVal == newVal.toLong().toDouble()) newVal.toLong().toString() else newVal.toString()
+                            },
+                            modifier = Modifier.size(40.dp).background(Color(0xFFB71C1C), RoundedCornerShape(8.dp))
+                        ) { Icon(Icons.Default.Remove, null, tint = Color.White) }
+                        
+                        Spacer(modifier = Modifier.width(4.dp))
+                        
+                        IconButton(
+                            onClick = {
+                                val current = quantityStr.replace(',', '.').toDoubleOrNull() ?: 0.0
+                                val newVal = current + 1.0
+                                quantityStr = if (newVal == newVal.toLong().toDouble()) newVal.toLong().toString() else newVal.toString()
+                            },
+                            modifier = Modifier.size(40.dp).background(Color(0xFF003300), RoundedCornerShape(8.dp))
+                        ) { Icon(Icons.Default.Add, null, tint = Color.White) }
+                    }
+                }
                 Spacer(modifier = Modifier.height(12.dp))
 
                 var unitExpanded by remember { mutableStateOf(false) }
@@ -1548,13 +1691,36 @@ fun EditItemDialog(itemKey: String, item: KitchenItem, onDismiss: () -> Unit, on
                 Spacer(modifier = Modifier.height(12.dp))
 
                 var catExpanded by remember { mutableStateOf(false) }
-                ExposedDropdownMenuBox(expanded = catExpanded, onExpandedChange = { catExpanded = it }) {
-                    OutlinedTextField(value = getLocalizedCategory(context, category), onValueChange = {}, readOnly = true, label = { Text("Category") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(catExpanded) }, modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth(), shape = RoundedCornerShape(12.dp))
-                    ExposedDropdownMenu(expanded = catExpanded, onDismissRequest = { catExpanded = false }) {
-                        listOf("fruits", "vegetables", "dairy", "meat", "chicken", "bakery", "frozen", "pantry", "cleaners", "spices").forEach { cat ->
-                            DropdownMenuItem(text = { Text(getLocalizedCategory(context, cat)) }, onClick = { category = cat; catExpanded = false })
+                var isCustomCategory by remember { mutableStateOf(false) }
+
+                if (!isCustomCategory) {
+                    ExposedDropdownMenuBox(expanded = catExpanded, onExpandedChange = { catExpanded = it }) {
+                        OutlinedTextField(value = getLocalizedCategory(context, category), onValueChange = {}, readOnly = true, label = { Text("Category") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(catExpanded) }, modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth(), shape = RoundedCornerShape(12.dp))
+                        ExposedDropdownMenu(expanded = catExpanded, onDismissRequest = { catExpanded = false }) {
+                            existingCategories.forEach { cat ->
+                                DropdownMenuItem(text = { Text(getLocalizedCategory(context, cat)) }, onClick = { category = cat; catExpanded = false })
+                            }
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("➕ Add New Custom Category...", color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold) },
+                                onClick = { isCustomCategory = true; category = ""; catExpanded = false }
+                            )
                         }
                     }
+                } else {
+                    OutlinedTextField(
+                        value = category,
+                        onValueChange = { category = it },
+                        label = { Text("Custom Category Name") },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        trailingIcon = {
+                            IconButton(onClick = { isCustomCategory = false; category = "pantry" }) {
+                                Icon(Icons.Default.Close, "Cancel")
+                            }
+                        },
+                        singleLine = true
+                    )
                 }
                 Spacer(modifier = Modifier.height(12.dp))
 
@@ -1573,7 +1739,7 @@ fun EditItemDialog(itemKey: String, item: KitchenItem, onDismiss: () -> Unit, on
                 }
             }
         },
-        confirmButton = { Button(onClick = { onItemUpdated(item.copy(quantity = quantityStr.toDoubleOrNull() ?: 1.0, minQuantity = item.minQuantity, unit = unit, category = category, expiryDate = expiryDate)) }) { Text("Update") } },
+        confirmButton = { Button(onClick = { onItemUpdated(item.copy(quantity = quantityStr.replace(',', '.').toDoubleOrNull() ?: 1.0, minQuantity = item.minQuantity, unit = unit, category = category, expiryDate = expiryDate)) }) { Text("Update") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
@@ -1604,7 +1770,7 @@ fun HelpScreen() {
             "Delete if not needed"
         ),
         "Shopping List & Low Stock 🛒" to listOf(
-            "Items <2 units, <0.6 L, <400 g auto‑added",
+            "Items <4 pcs/packets, <0.6 L, <400 g (<100g for spices/tea/coffee) auto‑added",
             "Tap cart icon to view",
             "Orange border = low stock"
         ),
@@ -1659,12 +1825,18 @@ fun HelpScreen() {
     }
 }
 
-fun isLowStock(item: KitchenItem): Boolean {
+fun isLowStock(key: String, item: KitchenItem): Boolean {
+    val k = key.lowercase()
+    if ((k == "tea" || k == "coffee" || item.category.lowercase() == "spices") && item.unit == "g") {
+        return item.quantity < 100
+    }
+
     return when (item.unit) {
         "l" -> item.quantity < 0.6
         "g" -> item.quantity < 400
         "kg" -> item.quantity < 0.4
-        "plate", "pcs", "packet", "jar", "bag" -> item.quantity < 2
+        "pcs", "packet" -> item.quantity < 4
+        "plate", "jar", "bag" -> item.quantity < 1
         else -> item.quantity <= item.minQuantity
     }
 }
@@ -1679,7 +1851,7 @@ fun ShoppingListScreen(userId: String, items: Map<String, KitchenItem>) {
     }
 
     val lowStockItems = remember(items) {
-        items.filter { (_, item) -> isLowStock(item) }.toList()
+        items.filter { (key, item) -> isLowStock(key, item) }.toList()
     }
 
     Scaffold(
