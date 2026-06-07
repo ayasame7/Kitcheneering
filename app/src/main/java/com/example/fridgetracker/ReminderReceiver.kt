@@ -9,6 +9,12 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ValueEventListener
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -20,6 +26,74 @@ class ReminderReceiver : BroadcastReceiver() {
             return
         }
 
+        // Get the current user ID from SharedPreferences
+        val sharedPref = context.getSharedPreferences("FridgeTracker", Context.MODE_PRIVATE)
+        val userId = sharedPref.getString("current_user_id", null)
+
+        if (userId == null) {
+            Log.w("ReminderReceiver", "No user logged in, skipping reminder")
+            return
+        }
+
+        // Check for expiring items first
+        checkAndShowExpiryNotifications(context, userId)
+
+        // Show generic daily reminder
+        showGenericReminder(context)
+    }
+
+    private fun checkAndShowExpiryNotifications(context: Context, userId: String) {
+        val database = FirebaseDatabase.getInstance().reference.child("users").child(userId).child("inventory")
+        val latch = CountDownLatch(1)
+        var expiringItems: List<String> = emptyList()
+
+        database.addListenerForSingleValueEvent(object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val itemsToNotify = mutableListOf<String>()
+                val now = System.currentTimeMillis()
+                val twoDaysInMillis = 2 * 24 * 60 * 60 * 1000
+
+                snapshot.children.forEach { child ->
+                    try {
+                        val item = child.getValue(KitchenItem::class.java)
+                        if (item != null && item.expiryDate != null) {
+                            val daysUntilExpiry = (item.expiryDate!! - now) / (24 * 60 * 60 * 1000).toDouble()
+
+                            // Show notification if item expires in 0-2 days (but not if already expired)
+                            if (daysUntilExpiry in 0.0..2.0) {
+                                itemsToNotify.add(child.key ?: "Unknown Item")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("ExpiryCheck", "Error parsing item: ${e.message}")
+                    }
+                }
+
+                expiringItems = itemsToNotify
+                if (itemsToNotify.isNotEmpty()) {
+                    Log.d("ExpiryCheck", "Found ${itemsToNotify.size} items expiring soon: $itemsToNotify")
+                    MainActivity.showExpiryNotification(context, itemsToNotify)
+                } else {
+                    Log.d("ExpiryCheck", "No items expiring within 2 days")
+                }
+                latch.countDown()
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                Log.e("ExpiryCheck", "Failed to fetch items: ${error.message}")
+                latch.countDown()
+            }
+        })
+
+        // Wait for Firebase query to complete (max 5 seconds)
+        try {
+            latch.await(5, TimeUnit.SECONDS)
+        } catch (e: InterruptedException) {
+            Log.w("ExpiryCheck", "Timeout waiting for Firebase query")
+        }
+    }
+
+    private fun showGenericReminder(context: Context) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channelId = "reminder_channel"
 
@@ -49,7 +123,7 @@ class ReminderReceiver : BroadcastReceiver() {
             .setAutoCancel(true)
             .build()
 
-        Log.d("ReminderReceiver", "Showing notification")
+        Log.d("ReminderReceiver", "Showing generic reminder notification")
         notificationManager.notify(System.currentTimeMillis().toInt(), notification)
     }
 }

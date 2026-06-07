@@ -21,6 +21,7 @@ import androidx.core.content.ContextCompat
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -65,6 +66,8 @@ import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
 import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.*
+import com.google.firebase.remoteconfig.FirebaseRemoteConfig
+import com.google.firebase.remoteconfig.FirebaseRemoteConfigSettings
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
@@ -82,7 +85,9 @@ data class KitchenItem(
 data class KitchenNote(
     val id: String = "",
     val text: String = "",
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val isExpiryReminder: Boolean = false,
+    val relatedItemName: String = ""
 )
 
 data class PredefinedItem(
@@ -637,6 +642,167 @@ class MainActivity : ComponentActivity() {
 
             Log.d("Reminder", "Twice-daily reminders scheduled at 9 AM and 6 PM")
         }
+
+        fun showExpiryNotification(context: Context, itemNames: List<String>) {
+            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            val channelId = "expiry_alerts_channel"
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = android.app.NotificationChannel(
+                    channelId,
+                    "Expiry Alerts",
+                    android.app.NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Alerts for items expiring in 2 days or less"
+                }
+                notificationManager.createNotificationChannel(channel)
+            }
+
+            val mainIntent = Intent(context, MainActivity::class.java)
+            val pendingIntent = PendingIntent.getActivity(
+                context,
+                1002,
+                mainIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val itemsList = itemNames.joinToString(", ")
+            val notification = androidx.core.app.NotificationCompat.Builder(context, channelId)
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setContentTitle("Expiring Soon! ⚠️")
+                .setContentText("The following items will expire within 2 days: $itemsList.")
+                .setStyle(androidx.core.app.NotificationCompat.BigTextStyle()
+                    .bigText("The following items will expire within 2 days: $itemsList. Use them soon! 🍳"))
+                .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .build()
+
+            try {
+                notificationManager.notify(1003, notification)
+            } catch (e: Exception) {
+                Log.e("Reminder", "Failed to show notification", e)
+            }
+        }
+
+        fun checkForAppUpdates(context: Context) {
+            val remoteConfig = FirebaseRemoteConfig.getInstance()
+            val configSettings = FirebaseRemoteConfigSettings.Builder()
+                .setMinimumFetchIntervalInSeconds(3600)
+                .build()
+            remoteConfig.setConfigSettingsAsync(configSettings)
+
+            remoteConfig.fetchAndActivate()
+                .addOnSuccessListener {
+                    val latestVersion = remoteConfig.getString("app_latest_version")
+                    val currentVersion = BuildConfig.VERSION_NAME
+
+                    Log.d("AppUpdate", "Current version: $currentVersion, Latest version: $latestVersion")
+
+                    if (latestVersion.isNotEmpty() && latestVersion != currentVersion && compareVersions(currentVersion, latestVersion) < 0) {
+                        Log.d("AppUpdate", "Update available! Current: $currentVersion, Latest: $latestVersion")
+                        showUpdateNotification(context, latestVersion)
+                    }
+                }
+                .addOnFailureListener { e ->
+                    Log.e("AppUpdate", "Failed to fetch remote config: ${e.message}")
+                }
+        }
+
+        private fun compareVersions(current: String, latest: String): Int {
+            val currentParts = current.split(".").map { it.toIntOrNull() ?: 0 }
+            val latestParts = latest.split(".").map { it.toIntOrNull() ?: 0 }
+
+            for (i in 0 until maxOf(currentParts.size, latestParts.size)) {
+                val curr = currentParts.getOrNull(i) ?: 0
+                val lat = latestParts.getOrNull(i) ?: 0
+                if (curr < lat) return -1
+                if (curr > lat) return 1
+            }
+            return 0
+        }
+
+        fun showUpdateNotification(context: Context, latestVersion: String) {
+            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            val channelId = "update_available_channel"
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = android.app.NotificationChannel(
+                    channelId,
+                    "App Updates",
+                    android.app.NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Notifications for new app versions"
+                }
+                notificationManager.createNotificationChannel(channel)
+            }
+
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                data = android.net.Uri.parse("https://play.google.com/store/apps/details?id=${context.packageName}")
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                context,
+                1001,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val notification = androidx.core.app.NotificationCompat.Builder(context, channelId)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("Update Available! 🎉")
+                .setContentText("FridgeTracker v$latestVersion is now available")
+                .setStyle(androidx.core.app.NotificationCompat.BigTextStyle()
+                    .bigText("A new version (v$latestVersion) of FridgeTracker is available. Tap to update now!"))
+                .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .addAction(android.R.drawable.ic_menu_view, "Update Now", pendingIntent)
+                .build()
+
+            try {
+                notificationManager.notify(1004, notification)
+            } catch (e: Exception) {
+                Log.e("AppUpdate", "Failed to show update notification", e)
+            }
+        }
+
+        fun checkExpiryNotifications(context: Context, userId: String) {
+            val database = FirebaseDatabase.getInstance().reference.child("users").child(userId).child("inventory")
+
+            database.addListenerForSingleValueEvent(object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    val itemsToNotify = mutableListOf<String>()
+                    val now = System.currentTimeMillis()
+
+                    snapshot.children.forEach { child ->
+                        try {
+                            val item = child.getValue(KitchenItem::class.java)
+                            if (item != null && item.expiryDate != null) {
+                                val daysUntilExpiry = (item.expiryDate!! - now) / (24 * 60 * 60 * 1000).toDouble()
+
+                                // Show notification if item expires in 0-2 days
+                                if (daysUntilExpiry in 0.0..2.0) {
+                                    itemsToNotify.add(child.key ?: "Unknown Item")
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e("ExpiryCheck", "Error parsing item: ${e.message}")
+                        }
+                    }
+
+                    if (itemsToNotify.isNotEmpty()) {
+                        Log.d("ExpiryCheck", "Found ${itemsToNotify.size} items expiring soon (real-time check): $itemsToNotify")
+                        showExpiryNotification(context, itemsToNotify)
+                    } else {
+                        Log.d("ExpiryCheck", "No items expiring within 2 days (real-time check)")
+                    }
+                }
+
+                override fun onCancelled(error: DatabaseError) {
+                    Log.e("ExpiryCheck", "Failed to fetch items for real-time check: ${error.message}")
+                }
+            })
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -666,6 +832,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             val context = LocalContext.current
             
+            // Check for app updates on app start
+            LaunchedEffect(Unit) {
+                MainActivity.checkForAppUpdates(context)
+            }
+
             // Request notification permission for Android 13+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val launcher = rememberLauncherForActivityResult(
@@ -738,9 +909,16 @@ class MainActivity : ComponentActivity() {
                     if (user == null) {
                         AuthScreen(onAuthSuccess = { user = auth.currentUser })
                     } else {
-                        MainAppScreen(user!!.uid, onLogout = {
+                        val userId = user!!.uid
+                        // Save user ID to SharedPreferences for ReminderReceiver
+                        val sharedPref = context.getSharedPreferences("FridgeTracker", Context.MODE_PRIVATE)
+                        sharedPref.edit().putString("current_user_id", userId).apply()
+                        
+                        MainAppScreen(userId, onLogout = {
                             auth.signOut()
                             user = null
+                            // Clear user ID from SharedPreferences
+                            sharedPref.edit().remove("current_user_id").apply()
                         })
                     }
                 }
@@ -805,6 +983,7 @@ fun AuthScreen(onAuthSuccess: () -> Unit) {
     var passwordVisible by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var showForgotPasswordDialog by remember { mutableStateOf(false) }
     val auth = FirebaseAuth.getInstance()
 
     Box(
@@ -866,6 +1045,12 @@ fun AuthScreen(onAuthSuccess: () -> Unit) {
                         visualTransformation = PasswordVisualTransformation(),
                         singleLine = true
                     )
+                } else {
+                    // Forgot Password link (only show in login mode)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    TextButton(onClick = { showForgotPasswordDialog = true }) {
+                        Text("Forgot Password? 🔐", color = Color(0xFF2E7D32), fontSize = 12.sp)
+                    }
                 }
 
                 errorMessage?.let {
@@ -914,6 +1099,112 @@ fun AuthScreen(onAuthSuccess: () -> Unit) {
             }
         }
     }
+
+    if (showForgotPasswordDialog) {
+        ForgotPasswordDialog(
+            onDismiss = { showForgotPasswordDialog = false },
+            auth = auth
+        )
+    }
+}
+
+@Composable
+fun ForgotPasswordDialog(onDismiss: () -> Unit, auth: FirebaseAuth) {
+    var resetEmail by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    var successMessage by remember { mutableStateOf<String?>(null) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Reset Password 🔐", fontWeight = FontWeight.Bold, color = Color(0xFF1B5E20)) },
+        text = {
+            Column {
+                Text(
+                    "Enter your email address and we'll send you a link to reset your password.",
+                    fontSize = 14.sp,
+                    color = Color.Gray,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+
+                OutlinedTextField(
+                    value = resetEmail,
+                    onValueChange = { resetEmail = it; errorMessage = null; successMessage = null },
+                    label = { Text("Email Address") },
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    shape = RoundedCornerShape(12.dp),
+                    singleLine = true
+                )
+
+                successMessage?.let {
+                    Text(
+                        it,
+                        color = Color(0xFF2E7D32),
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 12.dp),
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                errorMessage?.let {
+                    Text(
+                        it,
+                        color = Color.Red,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 12.dp),
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (loading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    color = Color(0xFF2E7D32),
+                    strokeWidth = 2.dp
+                )
+            } else {
+                Button(
+                    onClick = {
+                        if (resetEmail.isBlank()) {
+                            errorMessage = "Please enter your email address"
+                            return@Button
+                        }
+                        loading = true
+                        auth.sendPasswordResetEmail(resetEmail)
+                            .addOnSuccessListener {
+                                loading = false
+                                successMessage = "✅ Reset link sent to $resetEmail\n\nCheck your inbox (and spam folder)"
+                                Log.d("ForgotPassword", "Reset email sent to $resetEmail")
+                            }
+                            .addOnFailureListener { e ->
+                                loading = false
+                                errorMessage = when {
+                                    e.message?.contains("no user record") == true -> "❌ No account found with this email"
+                                    e.message?.contains("invalid") == true -> "❌ Invalid email format"
+                                    else -> "❌ Error: ${e.message ?: "Unknown error"}"
+                                }
+                                Log.e("ForgotPassword", "Error sending reset email: ${e.message}")
+                            }
+                    },
+                    enabled = resetEmail.isNotBlank() && successMessage == null,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF2E7D32),
+                        disabledContainerColor = Color(0xFF2E7D32).copy(alpha = 0.6f)
+                    )
+                ) {
+                    Text("Send Reset Link")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = Color.Gray)
+            }
+        }
+    )
 }
 
 @Composable
@@ -928,6 +1219,7 @@ fun MainAppScreen(userId: String, onLogout: () -> Unit) {
 
     LaunchedEffect(userId) {
         MainActivity.scheduleReminders(context)
+        MainActivity.checkExpiryNotifications(context, userId)
         
         database.addValueEventListener(object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
@@ -942,6 +1234,13 @@ fun MainAppScreen(userId: String, onLogout: () -> Unit) {
             }
             override fun onCancelled(error: DatabaseError) { Log.e("Firebase", "Error: ${error.message}") }
         })
+    }
+
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == 0) {
+            // Check for expiry alerts when user opens Inventory tab
+            MainActivity.checkExpiryNotifications(context, userId)
+        }
     }
 
     Scaffold(
@@ -1190,15 +1489,30 @@ fun InventoryScreen(
 @Composable
 fun KitchenItemCard(key: String, item: KitchenItem, arabicContext: Context? = null, onEdit: () -> Unit, onDelete: () -> Unit) {
     val context = LocalContext.current
-    val isExpired = item.expiryDate?.let { it < System.currentTimeMillis() } ?: false
+    val now = System.currentTimeMillis()
+    val isExpired = item.expiryDate?.let { it < now } ?: false
+    val isExpiringWithin2Days = item.expiryDate?.let { 
+        val daysUntilExpiry = (it - now) / (24 * 60 * 60 * 1000).toDouble()
+        daysUntilExpiry in 0.0..2.0
+    } ?: false
     val isLowStock = isLowStock(key, item)
 
     Card(
-        modifier = Modifier.fillMaxWidth().clickable { onEdit() },
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onEdit() }
+            .then(
+                if (isExpiringWithin2Days || isExpired) {
+                    Modifier.border(3.dp, Color.Red, RoundedCornerShape(16.dp))
+                } else {
+                    Modifier
+                }
+            ),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = when {
                 isExpired -> Color(0xFFFFEBEE).copy(alpha = 0.9f)
+                isExpiringWithin2Days -> Color(0xFFFFEBEE).copy(alpha = 0.9f)
                 isLowStock -> Color(0xFFFFF3E0).copy(alpha = 0.9f)
                 else -> Color.White.copy(alpha = 0.9f)
             }
@@ -1216,9 +1530,10 @@ fun KitchenItemCard(key: String, item: KitchenItem, arabicContext: Context? = nu
                 Text("Category: ${getLocalizedCategory(context, item.category)}", fontSize = 11.sp, color = Color.Gray)
 
                 if (isLowStock) Text("Low Stock!", fontSize = 10.sp, color = Color(0xFFE65100), fontWeight = FontWeight.Bold)
+                if (isExpiringWithin2Days && !isExpired) Text("Expiring Soon! ⚠️", fontSize = 10.sp, color = Color(0xFFE91E63), fontWeight = FontWeight.Bold)
                 item.expiryDate?.let {
                     val sdf = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
-                    Text("Expires: ${sdf.format(Date(it))}", fontSize = 10.sp, color = if (isExpired) Color.Red else Color.Gray)
+                    Text("Expires: ${sdf.format(Date(it))}", fontSize = 10.sp, color = if (isExpired || isExpiringWithin2Days) Color.Red else Color.Gray)
                 }
             }
             IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Delete", tint = Color.Red.copy(alpha = 0.6f)) }
@@ -1232,6 +1547,8 @@ fun KitchenNotesScreen(userId: String) {
     var showAddNoteDialog by remember { mutableStateOf(false) }
     var editingNote by remember { mutableStateOf<KitchenNote?>(null) }
     var noteText by remember { mutableStateOf("") }
+    var isExpiryReminder by remember { mutableStateOf(false) }
+    var relatedItemName by remember { mutableStateOf("") }
     var isSavingNote by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val database = remember(userId) { FirebaseDatabase.getInstance().reference.child("users").child(userId).child("notes") }
@@ -1281,31 +1598,70 @@ fun KitchenNotesScreen(userId: String) {
         }
     }
 
-    if (showAddNoteDialog) {
+    if (showAddNoteDialog || editingNote != null) {
+        LaunchedEffect(editingNote) {
+            if (editingNote != null) {
+                noteText = editingNote!!.text
+                isExpiryReminder = editingNote!!.isExpiryReminder
+                relatedItemName = editingNote!!.relatedItemName
+            }
+        }
+        
         LaunchedEffect(isSavingNote) {
             if (isSavingNote) {
-                delay(15000) // 15 second timeout instead of 30
+                delay(15000) // 15 second timeout
                 if (isSavingNote) {
-                    Log.w("NoteSave", "Save operation timeout after 15 seconds - Firebase not responding")
+                    Log.w("NoteSave", "Save operation timeout")
                     isSavingNote = false
-                    android.widget.Toast.makeText(
-                        context,
-                        "⏱️ Save timeout (15s)\n\n🔧 Fix:\n" +
-                        "1. Check internet\n" +
-                        "2. Go to Firebase Console\n" +
-                        "3. Realtime Database → Rules\n" +
-                        "4. Replace with default rules\n" +
-                        "5. Click Publish\n" +
-                        "6. Try again",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
                 }
             }
         }
+        
         AlertDialog(
-            onDismissRequest = { showAddNoteDialog = false; noteText = "" },
-            title = { Text("Add New Note", fontWeight = FontWeight.Bold, color = Color(0xFF1B5E20)) },
-            text = { OutlinedTextField(value = noteText, onValueChange = { noteText = it }, placeholder = { Text("Enter your note...") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) },
+            onDismissRequest = { showAddNoteDialog = false; noteText = ""; isExpiryReminder = false; relatedItemName = ""; editingNote = null },
+            title = { Text(if (editingNote != null) "Edit Note" else "Add New Note", fontWeight = FontWeight.Bold, color = Color(0xFF1B5E20)) },
+            text = { 
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = noteText, 
+                        onValueChange = { noteText = it }, 
+                        placeholder = { Text("Enter your note...") }, 
+                        modifier = Modifier.fillMaxWidth(), 
+                        shape = RoundedCornerShape(12.dp),
+                        maxLines = 4
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
+                    // Expiry Reminder Checkbox
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { isExpiryReminder = !isExpiryReminder }
+                            .padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = isExpiryReminder,
+                            onCheckedChange = { isExpiryReminder = it },
+                            colors = CheckboxDefaults.colors(checkedColor = Color(0xFFE91E63))
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Mark as expiry reminder ⚠️", fontSize = 12.sp, color = Color(0xFF333333))
+                    }
+                    
+                    if (isExpiryReminder) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = relatedItemName,
+                            onValueChange = { relatedItemName = it },
+                            placeholder = { Text("Item name (e.g., Milk) - optional") },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            singleLine = true
+                        )
+                    }
+                }
+            },
             confirmButton = {
                 Button(
                     onClick = {
@@ -1313,7 +1669,6 @@ fun KitchenNotesScreen(userId: String) {
                             isSavingNote = true
                             Log.d("NoteSave", "🔵 Starting to save note: ${noteText.take(50)}...")
 
-                            // Check authentication
                             val currentUser = FirebaseAuth.getInstance().currentUser
                             Log.d("NoteSave", "👤 Current user: ${currentUser?.uid ?: "NOT AUTHENTICATED"}")
 
@@ -1327,36 +1682,60 @@ fun KitchenNotesScreen(userId: String) {
                             Log.d("NoteSave", "🔐 Auth OK - User UID: ${currentUser.uid}")
                             Log.d("NoteSave", "📡 Attempting Firebase write...")
 
-                            val ref = database.push()
-                            Log.d("NoteSave", "🔑 Database reference created: ${ref.key}")
-
-                            ref.setValue(KitchenNote(id = ref.key ?: "", text = noteText))
-                                .addOnSuccessListener {
-                                    Log.d("NoteSave", "✅ SUCCESS - Note saved!")
-                                    noteText = ""
-                                    showAddNoteDialog = false
-                                    isSavingNote = false
-                                    android.widget.Toast.makeText(context, "✅ Note added", android.widget.Toast.LENGTH_SHORT).show()
-                                }
-                                .addOnFailureListener { e ->
-                                    Log.e("NoteSave", "❌ FAILED - ${e.message}", e)
-                                    isSavingNote = false
-
-                                    val errorMsg = when {
-                                        e.message?.contains("PERMISSION_DENIED") == true -> {
-                                            Log.e("NoteSave", "🔒 PERMISSION_DENIED - Firebase Rules not updated!")
-                                            "🔒 PERMISSION DENIED\n\n" +
-                                            "Firebase Rules NOT updated!\n\n" +
-                                            "📝 Read: FIREBASE_RULES_UPDATE_NOW.md\n" +
-                                            "Then rebuild and try again"
-                                        }
-                                        e.message?.contains("Invalid") == true -> "⚠️ Authentication Error\n\nFix: Log in again"
-                                        e.message?.contains("disconnect") == true -> "🌐 No connection\n\nCheck internet"
-                                        else -> "❌ Error: ${e.message ?: "Unknown"}"
+                            if (editingNote != null) {
+                                // Update existing note
+                                database.child(editingNote!!.id).setValue(
+                                    KitchenNote(
+                                        id = editingNote!!.id,
+                                        text = noteText,
+                                        isExpiryReminder = isExpiryReminder,
+                                        relatedItemName = relatedItemName,
+                                        timestamp = editingNote!!.timestamp
+                                    )
+                                )
+                                    .addOnSuccessListener {
+                                        Log.d("NoteSave", "✅ SUCCESS - Note updated!")
+                                        noteText = ""
+                                        isExpiryReminder = false
+                                        relatedItemName = ""
+                                        showAddNoteDialog = false
+                                        editingNote = null
+                                        isSavingNote = false
+                                        android.widget.Toast.makeText(context, "✅ Note updated", android.widget.Toast.LENGTH_SHORT).show()
                                     }
+                                    .addOnFailureListener { e ->
+                                        Log.e("NoteSave", "❌ FAILED - ${e.message}", e)
+                                        isSavingNote = false
+                                        android.widget.Toast.makeText(context, "❌ Update failed: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                            } else {
+                                // Save new note
+                                val ref = database.push()
+                                Log.d("NoteSave", "🔑 Database reference created: ${ref.key}")
 
-                                    android.widget.Toast.makeText(context, errorMsg, android.widget.Toast.LENGTH_LONG).show()
-                                }
+                                ref.setValue(
+                                    KitchenNote(
+                                        id = ref.key ?: "",
+                                        text = noteText,
+                                        isExpiryReminder = isExpiryReminder,
+                                        relatedItemName = relatedItemName
+                                    )
+                                )
+                                    .addOnSuccessListener {
+                                        Log.d("NoteSave", "✅ SUCCESS - Note saved!")
+                                        noteText = ""
+                                        isExpiryReminder = false
+                                        relatedItemName = ""
+                                        showAddNoteDialog = false
+                                        isSavingNote = false
+                                        android.widget.Toast.makeText(context, "✅ Note added", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                    .addOnFailureListener { e ->
+                                        Log.e("NoteSave", "❌ FAILED - ${e.message}", e)
+                                        isSavingNote = false
+                                        android.widget.Toast.makeText(context, "❌ Error: ${e.message ?: "Unknown"}", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                            }
                         }
                     },
                     enabled = !isSavingNote && noteText.isNotBlank(),
@@ -1372,57 +1751,11 @@ fun KitchenNotesScreen(userId: String) {
                             strokeWidth = 2.dp
                         )
                     } else {
-                        Text("Save")
+                        Text(if (editingNote != null) "Update" else "Save")
                     }
                 }
             },
-            dismissButton = { TextButton(onClick = { showAddNoteDialog = false; noteText = "" }) { Text("Cancel", color = Color.Gray) } }
-        )
-    }
-
-    editingNote?.let { note ->
-        var editText by remember { mutableStateOf(note.text) }
-        var isUpdatingNote by remember { mutableStateOf(false) }
-
-        AlertDialog(
-            onDismissRequest = { editingNote = null },
-            title = { Text("Edit Note", fontWeight = FontWeight.Bold, color = Color(0xFF1B5E20)) },
-            text = { 
-                OutlinedTextField(
-                    value = editText, 
-                    onValueChange = { editText = it }, 
-                    modifier = Modifier.fillMaxWidth(), 
-                    shape = RoundedCornerShape(12.dp)
-                ) 
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (editText.isNotBlank() && !isUpdatingNote) {
-                            isUpdatingNote = true
-                            database.child(note.id).child("text").setValue(editText)
-                                .addOnSuccessListener {
-                                    editingNote = null
-                                    isUpdatingNote = false
-                                    android.widget.Toast.makeText(context, "✅ Note updated", android.widget.Toast.LENGTH_SHORT).show()
-                                }
-                                .addOnFailureListener {
-                                    isUpdatingNote = false
-                                    android.widget.Toast.makeText(context, "❌ Update failed", android.widget.Toast.LENGTH_SHORT).show()
-                                }
-                        }
-                    },
-                    enabled = !isUpdatingNote && editText.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
-                ) {
-                    if (isUpdatingNote) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
-                    } else {
-                        Text("Update")
-                    }
-                }
-            },
-            dismissButton = { TextButton(onClick = { editingNote = null }) { Text("Cancel", color = Color.Gray) } }
+            dismissButton = { TextButton(onClick = { showAddNoteDialog = false; noteText = ""; isExpiryReminder = false; relatedItemName = ""; editingNote = null }) { Text("Cancel", color = Color.Gray) } }
         )
     }
 }
@@ -1430,14 +1763,28 @@ fun KitchenNotesScreen(userId: String) {
 @Composable
 fun NoteCard(note: KitchenNote, onEdit: () -> Unit, onDelete: () -> Unit) {
     val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
+    val backgroundColor = if (note.isExpiryReminder) Color(0xFFFFEBEE) else Color.White.copy(alpha = 0.9f)
+    val borderColor = if (note.isExpiryReminder) Color(0xFFE91E63) else Color.Transparent
+    
     Card(
         modifier = Modifier.fillMaxWidth().clickable { onEdit() }, 
         shape = RoundedCornerShape(12.dp), 
-        colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.9f)), 
-        elevation = CardDefaults.cardElevation(2.dp)
+        colors = CardDefaults.cardColors(containerColor = backgroundColor), 
+        elevation = CardDefaults.cardElevation(2.dp),
+        border = if (note.isExpiryReminder) androidx.compose.foundation.BorderStroke(2.dp, borderColor) else null
     ) {
         Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (note.isExpiryReminder) {
+                        Text(text = "⚠️ EXPIRY REMINDER", fontSize = 11.sp, color = Color(0xFFE91E63), fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
+                    if (note.relatedItemName.isNotBlank()) {
+                        Text(text = "📦 ${note.relatedItemName}", fontSize = 10.sp, color = Color(0xFF2E7D32), fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(text = note.text, fontSize = 14.sp, color = Color.Black)
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(text = sdf.format(Date(note.timestamp)), fontSize = 10.sp, color = Color.Gray)
@@ -1747,39 +2094,93 @@ fun EditItemDialog(itemKey: String, item: KitchenItem, onDismiss: () -> Unit, on
 @Composable
 fun HelpScreen() {
     val helpSections = listOf(
+        "Getting Started 🚀" to listOf(
+            "✅ Create account or login",
+            "✅ Add items with quantity, unit, category, expiry date",
+            "✅ Get notified about expiring items & low stock",
+            "✅ Take notes on your kitchen activities"
+        ),
         "Adding Items ➕" to listOf(
-            "Tap green \"+\" bottom right",
-            "Search item name",
-            "Set quantity, unit, category, expiry",
-            "Tap Add"
+            "Tap green \"+\" button bottom right",
+            "Search item name or select from quick list",
+            "Set quantity, unit, category, expiry date",
+            "Tap Add to save"
         ),
         "Updating Items ✏️" to listOf(
-            "Find item in list",
-            "Tap item card",
-            "Adjust with green \"+\" / red \"–\" or type quantity",
-            "Tap Update"
+            "Find item in Inventory tab",
+            "Tap item card to edit",
+            "Adjust quantity with green \"+\" / red \"–\" or type directly",
+            "Change expiry date or category if needed",
+            "Tap Update to save changes"
         ),
         "Removing Items 🗑️" to listOf(
-            "Tap red Delete bottom on the right next to the item",
-            "Item removed permanently"
-        ),
-        "Kitchen Notes 📝" to listOf(
-            "Tap Note icon top bar",
-            "Add text via Add Note",
-            "Date/time auto‑stamped",
-            "Delete if not needed"
-        ),
-        "Shopping List & Low Stock 🛒" to listOf(
-            "Items <4 pcs/packets, <0.6 L, <400 g (<100g for spices/tea/coffee) auto‑added",
-            "Tap cart icon to view",
-            "Orange border = low stock"
-        ),
-        "Searching & Filtering 🔍" to listOf(
-            "Use search bar for names",
-            "Use filter icon for categories (Fruits, Dairy, Frozen, ..)"
+            "Tap red Delete button next to the item",
+            "Item removed permanently from inventory",
+            "Can undo by adding it again"
         ),
         "Expiry Alerts ⚠️" to listOf(
-            "Red border = expired"
+            "🔴 Red border = Item expires within 2 days (0-48 hours)",
+            "🔴 Light pink background = Expiring or expired items",
+            "🔴 Red text for expiry date = Warning indicator",
+            "⏰ Real-time checks when app starts & opens Inventory",
+            "🔔 Daily reminders at 9 AM & 6 PM",
+            "📱 Tap notification to see expiring items",
+            "Use notes to create expiry reminders!"
+        ),
+        "Low Stock Thresholds 🛒" to listOf(
+            "Liters (L): < 0.6 L",
+            "Milliliters (ml): < 500 ml",
+            "Grams (g): < 400 g (< 100 g for tea/coffee/spices)",
+            "Kilograms (kg): < 0.4 kg",
+            "Pieces/Packets: < 4 pcs",
+            "Bottles/Boxes/Cartons: < 1 unit",
+            "Jars/Plates/Bags: < 2 units",
+            "Cans/Rolls/Dozen: < 2 units",
+            "Items < threshold appear in Shopping List 🛒"
+        ),
+        "Shopping List 🛒" to listOf(
+            "View all low-stock items automatically",
+            "Tap cart icon in bottom navigation",
+            "🟠 Light orange background = low stock alert",
+            "Delete item to remove from shopping list"
+        ),
+        "Kitchen Notes 📝" to listOf(
+            "Tap Notes tab to access",
+            "Tap green \"+\" to add new note",
+            "✅ Check \"Expiry Reminder\" to mark notes as important",
+            "📦 Add optional item name reference (e.g., Milk)",
+            "Edit note by tapping on it",
+            "Red border shows expiry reminder notes"
+        ),
+        "Searching & Filtering 🔍" to listOf(
+            "Use search bar in Inventory to find items by name",
+            "Use filter dropdown to view specific categories",
+            "Category options: Fruits, Dairy, Frozen, Grains, Spices, Vegetables, Beverages, etc."
+        ),
+        "App Updates 🎉" to listOf(
+            "Receive notifications when new app versions are available",
+            "Tap \"Update Now\" to go to Play Store",
+            "Updates bring bug fixes and new features",
+            "Check Help tab anytime for latest feature info"
+        ),
+        "Forgot Password 🔐" to listOf(
+            "On login screen, tap \"Forgot Password? 🔐\"",
+            "Enter your email address",
+            "A password reset link will be sent to your email",
+            "Click the link to set a new password",
+            "Come back and login with your new password"
+        ),
+        "Daily Reminders ⏰" to listOf(
+            "Get reminded at 9 AM: Update kitchen status",
+            "Get reminded at 6 PM: Update kitchen status",
+            "Reminders help you keep inventory accurate",
+            "Turn off in Android Settings > App Notifications if needed"
+        ),
+        "Troubleshooting 🔧" to listOf(
+            "Notifications not showing? Enable in Android Settings",
+            "Items not saving? Check internet connection",
+            "Forgotten password? Tap forgot password on login",
+            "Need more help? Check the Help Guide 📖"
         )
     )
 
@@ -1836,7 +2237,12 @@ fun isLowStock(key: String, item: KitchenItem): Boolean {
         "g" -> item.quantity < 400
         "kg" -> item.quantity < 0.4
         "pcs", "packet" -> item.quantity < 4
-        "plate", "jar", "bag" -> item.quantity < 1
+        "plate", "jar", "bottle" -> item.quantity < 2
+        "ml" -> item.quantity < 500
+        "bag", "box", "carton" -> item.quantity < 1
+        "can" -> item.quantity < 2
+        "dozen" -> item.quantity < 2
+        "roll" -> item.quantity < 2
         else -> item.quantity <= item.minQuantity
     }
 }
@@ -1849,6 +2255,7 @@ fun ShoppingListScreen(userId: String, items: Map<String, KitchenItem>) {
         configuration.setLocale(Locale.forLanguageTag("ar"))
         context.createConfigurationContext(configuration)
     }
+    val database = remember(userId) { FirebaseDatabase.getInstance().reference.child("users").child(userId).child("inventory") }
 
     val lowStockItems = remember(items) {
         items.filter { (key, item) -> isLowStock(key, item) }.toList()
@@ -1887,7 +2294,7 @@ fun ShoppingListScreen(userId: String, items: Map<String, KitchenItem>) {
                             item = item,
                             arabicContext = arabicContext,
                             onEdit = { /* No edit in shopping list */ },
-                            onDelete = { /* No delete in shopping list */ }
+                            onDelete = { database.child(key).removeValue() }
                         )
                     }
                 }

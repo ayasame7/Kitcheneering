@@ -12,8 +12,8 @@ android {
         applicationId = "com.sameh.kitchentracker"
         minSdk = 23
         targetSdk = 36
-        versionCode = 26
-        versionName = "2.0.5"
+        versionCode = 29
+        versionName = "2.0.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -56,6 +56,7 @@ dependencies {
     implementation(libs.firebase.auth)
     implementation(libs.firebase.appcheck.debug)
     implementation(libs.firebase.appcheck.playintegrity)
+    implementation("com.google.firebase:firebase-config")
     implementation(libs.play.services.auth)
 
     testImplementation(libs.junit)
